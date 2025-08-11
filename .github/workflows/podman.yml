@@ -1,14 +1,19 @@
+# Workflow name for security scanning jobs
 name: actions-jobs
+
+# Trigger conditions for the workflow
 on: 
   workflow_dispatch:
   pull_request:
     branches: [ "main", "master" ]
-
+    
+# Define permissions required for this workflow
 permissions:
   contents: read
   security-events: write
   actions: read
-
+  
+# Environment variables available to all jobs
 env:
   FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }} 
   FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
@@ -20,21 +25,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # Checkout the repository code with full git history
     - name: Checkout
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-
+        
+    # Determine which files to scan based on trigger type
     - name: Get changed files and create exclusions
       id: changed-files
       run: |
         if [ "${{ github.event_name }}" == "pull_request" ]; then
           echo "This is a PR - scanning only changed files"
           
-          # Get ALL files changed in this PR
+          # Get ALL files changed in this PR compared to base branch
           git diff --name-only origin/${{ github.base_ref }}..HEAD > all_changed_files.txt
           
-          # Exclude .github workflow files from changed files
+          # Exclude .github workflow files from security scanning
           grep -v '^\.github/' all_changed_files.txt > changed_files.txt || true
           
           if [ -s changed_files.txt ]; then
@@ -50,7 +57,7 @@ jobs:
             echo "Total files in repo: $(wc -l < all_files.txt)"
             echo "Changed files: $(wc -l < changed_files.txt)"
             
-            # Create exclusion list: all files MINUS changed files
+            # Create exclusion list: scan only changed files by excluding all others
             EXCLUDE_LIST=""
             while read -r file; do
               # If this file is NOT in the changed files list, add it to exclusions
@@ -78,10 +85,12 @@ jobs:
           echo "has_changes=true" >> $GITHUB_OUTPUT
           echo "scan_mode=full_repo" >> $GITHUB_OUTPUT
         fi
-
+        
+    # Create directory for scan output files
     - name: Create output directory
       run: mkdir -p ./scan-results
 
+    # Run CrowdStrike Falcon Cloud Security IaC scan
     - name: Run FCS IaC Scan
       uses: crowdstrike/fcs-action@v1.1.0
       id: fcs
@@ -98,6 +107,7 @@ jobs:
       env:
         FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
+    # Display detailed scan results for debugging and transparency
     - name: Display Detailed Scan Results
       if: always() && steps.changed-files.outputs.has_changes == 'true'
       run: |
@@ -115,11 +125,13 @@ jobs:
           echo ""
           echo "=== DETECTION SUMMARY ==="
           jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
-          
+
+          # Show high/critical findings that would cause workflow failure
           echo ""
           echo "=== HIGH/CRITICAL DETECTIONS ==="
           jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical") | "- \(.severity | ascii_upcase): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null || echo "No high/critical detections found"
-          
+
+          # Show sample of all detections for debugging (limited to 10)
           echo ""
           echo "=== ALL DETECTIONS (for debugging) ==="
           jq -r '.rule_detections[] | "- \(.severity): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null | head -10 || echo "Could not parse detections"
@@ -136,11 +148,13 @@ jobs:
           jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
         fi
 
+    # Check scan results and fail PR if critical/high issues found
     - name: Check FCS scan results
       if: always() && steps.changed-files.outputs.has_changes == 'true' && github.event_name == 'pull_request'
       run: |
         echo "FCS scan exit code: ${{ steps.fcs.outputs.exit-code }}"
-        
+
+        # Fail the workflow if scan found critical/high severity issues
         if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
           echo "::error::FCS scan failed with exit code ${{ steps.fcs.outputs.exit-code }}"
           echo "::error::This indicates critical or high severity security issues were found in changed files"
@@ -151,11 +165,13 @@ jobs:
           echo "PR can proceed"
         fi
 
+    # Handle case where no files need scanning
     - name: No changes detected
       if: steps.changed-files.outputs.has_changes == 'false'
       run: |
         echo "::notice::No files were changed in this PR (excluding workflow files). Skipping security scan."
 
+    # Transform SARIF format for better GitHub Security tab integration
     - name: Transform SARIF file
       if: always() && steps.changed-files.outputs.has_changes == 'true'
       run: |
@@ -175,12 +191,14 @@ jobs:
           echo "No SARIF file found to transform"
         fi
 
+    # Upload scan results to GitHub Security tab for code scanning alerts
     - name: Upload SARIF report to GitHub Code scanning
       uses: github/codeql-action/upload-sarif@v3
       if: always() && hashFiles('scan-results.sarif') != ''
       with:
         sarif_file: scan-results.sarif
 
+    # Generate workflow summary for GitHub Actions summary page
     - name: Scan Summary
       if: always()
       run: |
