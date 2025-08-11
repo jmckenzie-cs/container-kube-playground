@@ -104,6 +104,7 @@ jobs:
         output_path: './scan-results'
         fail_on: 'critical=1,high=1'
         upload_results: 'true'
+        project_owners: 'Mckenzie'
       env:
         FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
