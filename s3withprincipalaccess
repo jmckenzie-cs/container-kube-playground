@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template demonstrating S3 bucket misconfiguration - Access to Any Principal'
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name for the S3 bucket (must be globally unique)
+    Default: misconfigured-bucket-any-principal
+    AllowedPattern: '^[a-z0-9][a-z0-9-]*[a-z0-9]$'
+    ConstraintDescription: Bucket name must be lowercase, start and end with alphanumeric characters
+
+Resources:
+  MisconfiguredS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${BucketName}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Bucket Policy that grants access to ANY principal (*)
+  MisconfiguredBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MisconfiguredS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAnyPrincipalAccess
+            Effect: Allow
+            Principal: '*'  # This is the misconfiguration - allows ANY principal
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+              - 's3:ListBucket'
+            Resource:
+              - !Sub '${MisconfiguredS3Bucket}/*'
+              - !Ref MisconfiguredS3Bucket
+
+Outputs:
+  BucketName:
+    Description: Name of the misconfigured S3 bucket
+    Value: !Ref MisconfiguredS3Bucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+  
+  BucketArn:
+    Description: ARN of the misconfigured S3 bucket
+    Value: !GetAtt MisconfiguredS3Bucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
+  
+  SecurityWarning:
+    Description: Security warning about this bucket
+    Value: 'WARNING: This bucket allows access to ANY principal (*) - This is a security misconfiguration for testing purposes only!'
