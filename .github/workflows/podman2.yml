@@ -1,0 +1,281 @@
+# Workflow name for security scanning jobs
+name: actions-jobs
+
+# Trigger conditions for the workflow
+on: 
+  workflow_dispatch:
+  pull_request:
+    branches: [ "main", "master" ]
+    
+# Define permissions required for this workflow
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  
+# Environment variables available to all jobs
+env:
+  FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }} 
+  FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+  ECR_REPO: kkuhns
+  ECR_TAG: demo
+
+jobs:
+  sec-scans:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checkout the repository code with full git history
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    # Determine which files to scan based on trigger type
+    - name: Get changed files and create exclusions
+      id: changed-files
+      run: |
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          echo "This is a PR - scanning only changed files"
+          
+          # Get ALL files changed in this PR compared to base branch
+          git diff --name-only origin/${{ github.base_ref }}..HEAD > all_changed_files.txt
+          
+          # Exclude .github workflow files from security scanning
+          grep -v '^\.github/' all_changed_files.txt > changed_files.txt || true
+          
+          if [ -s changed_files.txt ]; then
+            echo "Changed files found:"
+            cat changed_files.txt
+            
+            # Find ALL files in the repo (excluding .git and .github)
+            find . -type f \
+              -not -path "./.git/*" \
+              -not -path "./.github/*" \
+              | sed 's|^\./||' > all_files.txt
+            
+            echo "Total files in repo: $(wc -l < all_files.txt)"
+            echo "Changed files: $(wc -l < changed_files.txt)"
+            
+            # Create exclusion list: scan only changed files by excluding all others
+            EXCLUDE_LIST=""
+            while read -r file; do
+              # If this file is NOT in the changed files list, add it to exclusions
+              if ! grep -q "^$file$" changed_files.txt; then
+                if [ -z "$EXCLUDE_LIST" ]; then
+                  EXCLUDE_LIST="$file"
+                else
+                  EXCLUDE_LIST="$EXCLUDE_LIST,$file"
+                fi
+              fi
+            done < all_files.txt
+            
+            echo "Files to exclude: $(echo "$EXCLUDE_LIST" | tr ',' '\n' | wc -l)"
+            echo "exclude_paths=$EXCLUDE_LIST" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "scan_mode=pr_changes" >> $GITHUB_OUTPUT
+          else
+            echo "No files changed in this PR (excluding workflow files)"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "scan_mode=pr_changes" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "Manual trigger - scanning entire repository"
+          echo "exclude_paths=" >> $GITHUB_OUTPUT
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "scan_mode=full_repo" >> $GITHUB_OUTPUT
+        fi
+        
+    # Create directory for scan output files
+    - name: Create output directory
+      run: mkdir -p ./scan-results
+
+    # Run CrowdStrike Falcon Cloud Security IaC scan
+    - name: Run FCS IaC Scan
+      uses: crowdstrike/fcs-action@v1.1.0
+      id: fcs
+      if: steps.changed-files.outputs.has_changes == 'true'
+      with:
+        falcon_client_id: ${{ secrets.FALCON_CLIENT_ID }}
+        falcon_region: 'us-2'
+        path: '.'
+        exclude_paths: ${{ steps.changed-files.outputs.exclude_paths }}
+        report_formats: 'sarif,json'
+        output_path: './scan-results'
+        fail_on: 'critical=1,high=1'
+        upload_results: 'true'
+      env:
+        FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+
+    # Display detailed scan results for debugging and transparency
+    - name: Display Detailed Scan Results
+      if: always() && steps.changed-files.outputs.has_changes == 'true'
+      run: |
+        echo "=== FCS SCAN RESULTS ANALYSIS ==="
+        echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+        echo ""
+        
+        if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
+          JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
+          echo "JSON file: $JSON_FILE"
+          
+          # First, let's see the actual JSON structure
+          echo ""
+          echo "=== JSON STRUCTURE DEBUG ==="
+          echo "Top-level keys:"
+          jq 'keys' "$JSON_FILE" 2>/dev/null || echo "Could not parse JSON keys"
+          
+          echo ""
+          echo "=== DETECTION SUMMARY ==="
+          jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
+          
+          # Let's examine the actual structure of rule_detections
+          echo ""
+          echo "=== RULE DETECTIONS STRUCTURE ==="
+          echo "First detection keys:"
+          jq -r '.rule_detections[0] | keys' "$JSON_FILE" 2>/dev/null || echo "Could not parse rule_detections structure"
+          
+          echo ""
+          echo "=== SAMPLE DETECTION (RAW) ==="
+          jq -r '.rule_detections[0]' "$JSON_FILE" 2>/dev/null || echo "Could not show sample detection"
+          
+          # Try different possible field names
+          echo ""
+          echo "=== HIGH/CRITICAL DETECTIONS (CORRECTED) ==="
+          # Try multiple possible field name combinations
+          jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical" or .severity == "high" or .severity == "critical") | 
+            "- \(.severity | ascii_upcase): \(.title // .rule_title // .name // .rule_name // "Unknown") (File: \(.file_path // .filepath // .file // "Unknown"), Line: \(.line_number // .line // .start_line // "N/A"))"' "$JSON_FILE" 2>/dev/null || 
+          
+          # Fallback - show all available fields for high/critical
+          jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical" or .severity == "high" or .severity == "critical") | 
+            "- \(.severity | ascii_upcase): \(. | to_entries | map("\(.key)=\(.value)") | join(", "))"' "$JSON_FILE" 2>/dev/null ||
+          
+          echo "Could not parse high/critical detections with any known field names"
+          
+          echo ""
+          echo "=== ALL DETECTIONS (FIRST 5 WITH ALL FIELDS) ==="
+          jq -r '.rule_detections[0:5][] | 
+            "- \(.severity): \(. | to_entries | map(select(.key != "severity") | "\(.key)=\(.value)") | join(", "))"' "$JSON_FILE" 2>/dev/null ||
+          echo "Could not parse any detections"
+          
+        else
+          echo "No JSON results file found"
+          ls -la ./scan-results/ 2>/dev/null || echo "scan-results directory not found"
+        fi
+        
+        # Also check SARIF for additional context
+        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
+          echo ""
+          echo "=== SARIF SAMPLE FINDINGS ==="
+          SARIF_FILE=$(ls ./scan-results/*-scan-results.sarif | head -1)
+          jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
+        fi
+
+    # Check scan results and fail PR if critical/high issues found
+    - name: Check FCS scan results
+      if: always() && steps.changed-files.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+      run: |
+        echo "FCS scan exit code: ${{ steps.fcs.outputs.exit-code }}"
+
+        # Fail the workflow if scan found critical/high severity issues
+        if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+          echo "::error::FCS scan failed with exit code ${{ steps.fcs.outputs.exit-code }}"
+          echo "::error::This indicates critical or high severity security issues were found in changed files"
+          echo "::error::Check the 'Display Detailed Scan Results' step above for specific findings"
+          exit 1
+        else
+          echo "::notice::FCS scan passed - no critical/high severity issues found in changed files"
+          echo "PR can proceed"
+        fi
+
+    # Handle case where no files need scanning
+    - name: No changes detected
+      if: steps.changed-files.outputs.has_changes == 'false'
+      run: |
+        echo "::notice::No files were changed in this PR (excluding workflow files). Skipping security scan."
+
+    # Transform SARIF format for better GitHub Security tab integration
+    - name: Transform SARIF file
+      if: always() && steps.changed-files.outputs.has_changes == 'true'
+      run: |
+        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
+          cp ./scan-results/*-scan-results.sarif original.sarif
+          jq '
+            .runs[].tool.driver.informationUri = "https://www.crowdstrike.com" |
+            .runs[].tool.driver.rules[] |= (
+              if .defaultConfiguration.level == "critical" or .defaultConfiguration.level == "high" then .defaultConfiguration.level = "error"
+              elif .defaultConfiguration.level == "medium" then .defaultConfiguration.level = "warning"
+              elif .defaultConfiguration.level == "low" or .defaultConfiguration.level == "informational" then .defaultConfiguration.level = "note"
+              else .defaultConfiguration.level = "warning"
+              end
+            )
+          ' original.sarif > scan-results.sarif
+        else
+          echo "No SARIF file found to transform"
+        fi
+
+    # Upload scan results to GitHub Security tab for code scanning alerts
+    - name: Upload SARIF report to GitHub Code scanning
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('scan-results.sarif') != ''
+      with:
+        sarif_file: scan-results.sarif
+
+    # Generate workflow summary for GitHub Actions summary page
+    - name: Scan Summary
+      if: always()
+      run: |
+        echo "## IaC Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Scan Mode**: ${{ steps.changed-files.outputs.scan_mode }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **FCS Exit Code**: ${{ steps.fcs.outputs.exit-code }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Files Excluded**: $(echo '${{ steps.changed-files.outputs.exclude_paths }}' | tr ',' '\n' | wc -l)" >> $GITHUB_STEP_SUMMARY
+
+#**************************************************************************************************************
+# COMMENTED OUT - Container scanning sections until we can get FCS CLI image assessment working
+#**************************************************************************************************************
+
+    # - name: Ensure docker is not running
+    #   run: |
+    #     sudo systemctl stop docker.service
+    #     sudo systemctl stop docker.socket
+
+    # - name: Podman build
+    #   run: |
+    #     podman build --platform linux/amd64 -t ${{ secrets.AWS_ACCOUNT_ID}}.dkr.ecr.us-east-2.amazonaws.com/${{ env.ECR_REPO }}:${{ env.ECR_TAG }} .
+    #     systemctl --user enable --now podman.socket
+
+    # - name: Configure AWS credentials for FCS CLI
+    #   uses: aws-actions/configure-aws-credentials@v4
+    #   with:
+    #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_FCS }}
+    #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_FCS }}
+    #     aws-region: us-west-2
+
+    # - name: Download and Update FCS CLI
+    #   run: |
+    #     echo "Downloading FCS CLI from S3..."
+    #     aws s3 cp s3://fcs-cli-beta-testing-kc/fcs /usr/local/bin/fcs
+    #     chmod +x /usr/local/bin/fcs
+    #     
+    #     echo "Current FCS CLI version:"
+    #     fcs version || echo "Could not get version"
+    #     
+    #     echo "Updating FCS CLI to latest version..."
+    #     fcs update || echo "Update failed or not needed"
+    #     
+    #     echo "Updated FCS CLI version:"
+    #     fcs version || echo "Could not get version after update"
+
+    # - name: Configure FCS CLI
+    #   env:
+    #     FCS_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
+    #     FCS_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+    #     FCS_FALCON_REGION: "us-1"
+    #   run: |
+    #     fcs configure --client-id "$FCS_CLIENT_ID" --client-secret "$FCS_CLIENT_SECRET" --falcon-region "$FCS_FALCON_REGION"
+   
+    # - name: Run FCS CLI Image Scan
+    #   run: |
+    #     echo "Scanning container image..."
+    #     fcs scan image ${{ secrets.AWS_ACCOUNT_ID}}.dkr.ecr.us-east-2.amazonaws.com/${{ env.ECR_REPO }}:${{ env.ECR_TAG }} --platform linux/amd64 --upload
