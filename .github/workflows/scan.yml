@@ -1,0 +1,544 @@
+# Workflow name for security scanning jobs
+name: actions-jobs
+
+# Trigger conditions for the workflow
+on: 
+  workflow_dispatch:
+  pull_request:
+    branches: [ "main", "master" ]
+    
+# Define permissions required for this workflow
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  pull-requests: write  # Added for PR commenting
+  
+# Environment variables available to all jobs
+env:
+  FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }} 
+  FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+  ECR_REPO: kkuhns
+  ECR_TAG: demo
+
+jobs:
+  sec-scans:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checkout the repository code with full git history
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    # Determine which files to scan based on trigger type
+    - name: Get changed files and create exclusions
+      id: changed-files
+      run: |
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          echo "This is a PR - scanning only changed files"
+          
+          # Get ALL files changed in this PR compared to base branch
+          git diff --name-only origin/${{ github.base_ref }}..HEAD > all_changed_files.txt
+          
+          # Exclude .github workflow files from security scanning
+          grep -v '^\.github/' all_changed_files.txt > changed_files.txt || true
+          
+          if [ -s changed_files.txt ]; then
+            echo "Changed files found:"
+            cat changed_files.txt
+            
+            # Find ALL files in the repo (excluding .git and .github)
+            find . -type f \
+              -not -path "./.git/*" \
+              -not -path "./.github/*" \
+              | sed 's|^\./||' > all_files.txt
+            
+            echo "Total files in repo: $(wc -l < all_files.txt)"
+            echo "Changed files: $(wc -l < changed_files.txt)"
+            
+            # Create exclusion list: scan only changed files by excluding all others
+            EXCLUDE_LIST=""
+            while read -r file; do
+              # If this file is NOT in the changed files list, add it to exclusions
+              if ! grep -q "^$file$" changed_files.txt; then
+                if [ -z "$EXCLUDE_LIST" ]; then
+                  EXCLUDE_LIST="$file"
+                else
+                  EXCLUDE_LIST="$EXCLUDE_LIST,$file"
+                fi
+              fi
+            done < all_files.txt
+            
+            echo "Files to exclude: $(echo "$EXCLUDE_LIST" | tr ',' '\n' | wc -l)"
+            echo "exclude_paths=$EXCLUDE_LIST" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "scan_mode=pr_changes" >> $GITHUB_OUTPUT
+          else
+            echo "No files changed in this PR (excluding workflow files)"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "scan_mode=pr_changes" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "Manual trigger - scanning entire repository"
+          echo "exclude_paths=" >> $GITHUB_OUTPUT
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "scan_mode=full_repo" >> $GITHUB_OUTPUT
+        fi
+        
+    # Create directory for scan output files
+    - name: Create output directory
+      run: mkdir -p ./scan-results
+
+    # Run CrowdStrike Falcon Cloud Security IaC scan
+    - name: Run FCS IaC Scan
+      uses: crowdstrike/fcs-action@v1.1.0
+      id: fcs
+      if: steps.changed-files.outputs.has_changes == 'true'
+      with:
+        falcon_client_id: ${{ secrets.FALCON_CLIENT_ID }}
+        falcon_region: 'us-2'
+        path: '.'
+        exclude_paths: ${{ steps.changed-files.outputs.exclude_paths }}
+        report_formats: 'sarif,json'
+        output_path: './scan-results'
+        fail_on: 'critical=1,high=1'
+        upload_results: 'true'
+      env:
+        FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+
+    # Format and display FCS scan results with enhanced reporting
+    - name: Format and Display FCS Results
+      if: always() && steps.changed-files.outputs.has_changes == 'true'
+      id: format-results
+      run: |
+        echo "=== FCS SCAN RESULTS FORMATTING ==="
+        echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+        echo ""
+        
+        # Find the JSON results file
+        JSON_FILE=""
+        if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
+          JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
+          echo "Found JSON results file: $JSON_FILE"
+        else
+          echo "No JSON results file found"
+          exit 0
+        fi
+        
+        # Display enhanced console summary
+        echo ""
+        echo "================================================================================"
+        echo "                    CROWDSTRIKE FCS SCAN RESULTS SUMMARY"
+        echo "================================================================================"
+        echo ""
+        
+        # Extract and display key metrics with better formatting
+        total_issues=$(jq -r '.detection_summary.total // 0' "$JSON_FILE")
+        high_issues=$(jq -r '.detection_summary.high // 0' "$JSON_FILE")
+        medium_issues=$(jq -r '.detection_summary.medium // 0' "$JSON_FILE")
+        info_issues=$(jq -r '.detection_summary.informational // 0' "$JSON_FILE")
+        critical_issues=$(jq -r '.detection_summary.critical // 0' "$JSON_FILE")
+        
+        # Scan metadata
+        scan_uuid=$(jq -r '.scan_uuid // "N/A"' "$JSON_FILE")
+        scan_date=$(jq -r '.scan_performed_at // "N/A"' "$JSON_FILE")
+        scan_duration=$(jq -r '.scan_duration_seconds // "N/A"' "$JSON_FILE")
+        files_scanned=$(jq -r '.stats.files_stats.total // "N/A"' "$JSON_FILE")
+        
+        echo "📊 Scan Information:"
+        echo "   • Scan UUID: $scan_uuid"
+        echo "   • Scan Date: $scan_date"
+        echo "   • Duration: ${scan_duration}s"
+        echo "   • Files Scanned: $files_scanned"
+        echo ""
+        
+        echo "🛡️ Security Findings Summary:"
+        echo "   • 🔴 Critical Severity: $critical_issues"
+        echo "   • 🟠 High Severity: $high_issues"
+        echo "   • 🟡 Medium Severity: $medium_issues"
+        echo "   • ℹ️  Informational: $info_issues"
+        echo "   • 📊 Total Issues: $total_issues"
+        echo ""
+        
+        # Set outputs for other steps
+        echo "total-issues=$total_issues" >> $GITHUB_OUTPUT
+        echo "high-issues=$high_issues" >> $GITHUB_OUTPUT
+        echo "critical-issues=$critical_issues" >> $GITHUB_OUTPUT
+        echo "medium-issues=$medium_issues" >> $GITHUB_OUTPUT
+        echo "json-file=$JSON_FILE" >> $GITHUB_OUTPUT
+        
+        # Show top critical/high findings with better formatting
+        if [ "$critical_issues" -gt 0 ] || [ "$high_issues" -gt 0 ]; then
+          echo "🚨 Critical/High Severity Findings:"
+          jq -r '.rule_detections[] | select(.severity == "Critical" or .severity == "High") | 
+            "   • " + .severity + ": " + .rule_name + 
+            "\n     📁 File: " + (.detections[0].file // "N/A") + 
+            " (Line " + ((.detections[0].line // 0) | tostring) + ")" +
+            "\n     💡 " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
+          echo ""
+        fi
+        
+        # Generate human-readable summary file
+        SUMMARY_FILE="./scan-results/fcs-detailed-summary.txt"
+        echo "📝 Generating detailed summary report..."
+        
+        cat > "$SUMMARY_FILE" << EOF
+================================================================================
+CrowdStrike Falcon Cloud Security - Detailed Scan Results
+================================================================================
+
+Scan Information:
+- Scan UUID: $scan_uuid
+- Scan Date: $scan_date  
+- Scan Duration: ${scan_duration} seconds
+- Files Scanned: $files_scanned
+- Scan Mode: ${{ steps.changed-files.outputs.scan_mode }}
+
+Security Findings Summary:
+- 🔴 Critical Severity: $critical_issues
+- 🟠 High Severity: $high_issues  
+- 🟡 Medium Severity: $medium_issues
+- ℹ️  Informational: $info_issues
+- 📊 Total Issues: $total_issues
+
+================================================================================
+DETAILED FINDINGS BY SEVERITY
+================================================================================
+
+EOF
+        
+        # Add detailed findings for each severity level
+        for severity in "Critical" "High" "Medium" "Informational"; do
+          count=$(jq -r --arg sev "$severity" '[.rule_detections[] | select(.severity == $sev) | .detections[]] | length' "$JSON_FILE")
+          
+          if [ "$count" -gt 0 ]; then
+            echo "" >> "$SUMMARY_FILE"
+            echo "=== $severity SEVERITY ISSUES ($count found) ===" >> "$SUMMARY_FILE"
+            echo "" >> "$SUMMARY_FILE"
+            
+            jq -r --arg sev "$severity" '
+              .rule_detections[] |
+              select(.severity == $sev) |
+              . as $rule |
+              .detections[] |
+              "Rule: " + $rule.rule_name + "
+Category: " + $rule.rule_category + "  
+Description: " + $rule.description + "
+Platform: " + $rule.platform + " | Cloud Provider: " + ($rule.cloud_provider // "N/A") + "
+
+Affected Resource:
+  📁 File: " + .file + " (Line " + (.line | tostring) + ")
+  🏷️  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "
+  ⚠️  Issue: " + .reason + "
+  💡 Recommendation: " + .recommendation +
+              (if .remediation then "
+  🔧 Remediation: " + .remediation else "" end) + "
+
+" + ("─" * 80) + "
+"
+            ' "$JSON_FILE" >> "$SUMMARY_FILE"
+          fi
+        done
+        
+        # Add footer to summary
+        cat >> "$SUMMARY_FILE" << EOF
+
+================================================================================
+SCAN COMPLETION SUMMARY  
+================================================================================
+
+Generated on: $(date)
+Workflow: ${{ github.workflow }}
+Run ID: ${{ github.run_id }}
+
+Report Files Generated:
+- JSON Results: $(basename "$JSON_FILE")
+- Detailed Summary: $(basename "$SUMMARY_FILE")
+- SARIF Results: Available in scan-results directory
+
+For remediation guidance, consult:
+- CrowdStrike Falcon Cloud Security documentation
+- Your organization's security team
+- The detailed recommendations above
+
+================================================================================
+EOF
+        
+        echo "✅ Detailed summary generated: $SUMMARY_FILE"
+        echo "summary-file=$SUMMARY_FILE" >> $GITHUB_OUTPUT
+        
+        echo ""
+        echo "================================================================================"
+        echo ""
+
+    # Display detailed scan results for debugging and transparency
+    - name: Display Detailed Scan Results
+      if: always() && steps.changed-files.outputs.has_changes == 'true'
+      run: |
+        echo "=== FCS SCAN RESULTS ANALYSIS ==="
+        echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+        echo ""
+        
+        # Check if JSON results exist and display them with correct structure
+        if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
+          echo "=== JSON SCAN RESULTS ==="
+          JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
+          echo "JSON file: $JSON_FILE"
+          
+          # Display summary using correct JSON structure
+          echo ""
+          echo "=== DETECTION SUMMARY ==="
+          jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
+
+          # Show high/critical findings that would cause workflow failure
+          echo ""
+          echo "=== HIGH/CRITICAL DETECTIONS ==="
+          jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical") | "- \(.severity | ascii_upcase): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null || echo "No high/critical detections found"
+
+          # Show sample of all detections for debugging (limited to 10)
+          echo ""
+          echo "=== ALL DETECTIONS (for debugging) ==="
+          jq -r '.rule_detections[] | "- \(.severity): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null | head -10 || echo "Could not parse detections"
+          
+        else
+          echo "No JSON results file found"
+        fi
+        
+        # Also check SARIF for additional context
+        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
+          echo ""
+          echo "=== SARIF SAMPLE FINDINGS ==="
+          SARIF_FILE=$(ls ./scan-results/*-scan-results.sarif | head -1)
+          jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
+        fi
+
+    # Comment on PR with formatted results
+    - name: Comment PR with Security Results
+      if: always() && github.event_name == 'pull_request' && steps.format-results.outputs.json-file != ''
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const jsonFile = '${{ steps.format-results.outputs.json-file }}';
+          
+          if (!fs.existsSync(jsonFile)) {
+            console.log('No results file found for PR comment');
+            return;
+          }
+          
+          const results = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+          const exitCode = '${{ steps.fcs.outputs.exit-code }}';
+          const scanMode = '${{ steps.changed-files.outputs.scan_mode }}';
+          
+          // Determine status emoji and message
+          const totalIssues = results.detection_summary?.total || 0;
+          const criticalIssues = results.detection_summary?.critical || 0;
+          const highIssues = results.detection_summary?.high || 0;
+          
+          let statusEmoji = '✅';
+          let statusMessage = 'No security issues found!';
+          
+          if (criticalIssues > 0 || highIssues > 0) {
+            statusEmoji = '🚨';
+            statusMessage = 'Critical/High severity security issues found!';
+          } else if (totalIssues > 0) {
+            statusEmoji = '⚠️';
+            statusMessage = 'Medium/Low severity issues found.';
+          }
+          
+          const summary = `## ${statusEmoji} CrowdStrike FCS Security Scan Results
+          
+          **Scan Status:** ${statusMessage}
+          **Scan Mode:** ${scanMode === 'pr_changes' ? '🔍 Changed Files Only' : '📂 Full Repository'}
+          **Exit Code:** ${exitCode}
+          
+          ### 📊 Security Findings Summary
+          | Severity | Count |
+          |----------|-------|
+          | 🔴 Critical | ${results.detection_summary?.critical || 0} |
+          | 🟠 High | ${results.detection_summary?.high || 0} |
+          | 🟡 Medium | ${results.detection_summary?.medium || 0} |
+          | ℹ️ Informational | ${results.detection_summary?.informational || 0} |
+          | **📊 Total** | **${totalIssues}** |
+          
+          ### 📈 Scan Metadata
+          - **Files Scanned:** ${results.stats?.files_stats?.total || 'N/A'}
+          - **Scan Duration:** ${results.scan_duration_seconds || 'N/A'}s
+          - **Scan UUID:** \`${results.scan_uuid || 'N/A'}\`
+          
+          ${totalIssues > 0 ? `
+          ### 🔍 Action Required
+          ${criticalIssues > 0 || highIssues > 0 ? 
+            '❌ **This PR cannot be merged** until critical/high severity issues are resolved.' : 
+            '✅ This PR can be merged, but consider addressing the findings below.'}
+          
+          **View detailed results in the [Actions tab](${context.payload.pull_request.html_url.replace('/pull/', '/actions/runs/')})** for specific file locations and remediation guidance.
+          ` : ''}
+          
+          ---
+          <sub>🛡️ Powered by CrowdStrike Falcon Cloud Security | 🤖 Automated Security Scanning</sub>`;
+          
+          // Find existing comment to update or create new one
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          
+          const existingComment = comments.find(comment => 
+            comment.body.includes('CrowdStrike FCS Security Scan Results')
+          );
+          
+          if (existingComment) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existingComment.id,
+              body: summary
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: summary
+            });
+          }
+
+    # Upload detailed summary as artifact
+    - name: Upload Detailed Summary
+      if: always() && steps.format-results.outputs.summary-file != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: fcs-detailed-summary
+        path: ${{ steps.format-results.outputs.summary-file }}
+        retention-days: 30
+
+    # Check scan results and fail PR if critical/high issues found
+    - name: Check FCS scan results
+      if: always() && steps.changed-files.outputs.has_changes == 'true' && github.event_name == 'pull_request'
+      run: |
+        echo "FCS scan exit code: ${{ steps.fcs.outputs.exit-code }}"
+
+        # Fail the workflow if scan found critical/high severity issues
+        if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+          echo "::error::FCS scan failed with exit code ${{ steps.fcs.outputs.exit-code }}"
+          echo "::error::This indicates critical or high severity security issues were found in changed files"
+          echo "::error::Check the 'Format and Display FCS Results' step above for specific findings"
+          exit 1
+        else
+          echo "::notice::FCS scan passed - no critical/high severity issues found in changed files"
+          echo "PR can proceed"
+        fi
+
+    # Handle case where no files need scanning
+    - name: No changes detected
+      if: steps.changed-files.outputs.has_changes == 'false'
+      run: |
+        echo "::notice::No files were changed in this PR (excluding workflow files). Skipping security scan."
+
+    # Transform SARIF format for better GitHub Security tab integration
+    - name: Transform SARIF file
+      if: always() && steps.changed-files.outputs.has_changes == 'true'
+      run: |
+        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
+          cp ./scan-results/*-scan-results.sarif original.sarif
+          jq '
+            .runs[].tool.driver.informationUri = "https://www.crowdstrike.com" |
+            .runs[].tool.driver.rules[] |= (
+              if .defaultConfiguration.level == "critical" or .defaultConfiguration.level == "high" then .defaultConfiguration.level = "error"
+              elif .defaultConfiguration.level == "medium" then .defaultConfiguration.level = "warning"
+              elif .defaultConfiguration.level == "low" or .defaultConfiguration.level == "informational" then .defaultConfiguration.level = "note"
+              else .defaultConfiguration.level = "warning"
+              end
+            )
+          ' original.sarif > scan-results.sarif
+        else
+          echo "No SARIF file found to transform"
+        fi
+
+    # Upload scan results to GitHub Security tab for code scanning alerts
+    - name: Upload SARIF report to GitHub Code scanning
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('scan-results.sarif') != ''
+      with:
+        sarif_file: scan-results.sarif
+
+    # Generate enhanced workflow summary for GitHub Actions summary page
+    - name: Enhanced Scan Summary
+      if: always()
+      run: |
+        echo "## 🛡️ CrowdStrike FCS Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| **Trigger** | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Scan Mode** | ${{ steps.changed-files.outputs.scan_mode }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Exit Code** | ${{ steps.fcs.outputs.exit-code }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Total Issues** | ${{ steps.format-results.outputs.total-issues || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Critical Issues** | ${{ steps.format-results.outputs.critical-issues || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| **High Issues** | ${{ steps.format-results.outputs.high-issues || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ steps.format-results.outputs.total-issues }}" != "0" ] && [ "${{ steps.format-results.outputs.total-issues }}" != "" ]; then
+          echo "### 📋 Actions Required" >> $GITHUB_STEP_SUMMARY
+          echo "- Review detailed findings in the workflow logs" >> $GITHUB_STEP_SUMMARY
+          echo "- Download the detailed summary artifact for complete remediation guidance" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "- Check the PR comment for a summary of security findings" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "### ✅ No Security Issues Found" >> $GITHUB_STEP_SUMMARY
+          echo "All scanned files passed security validation." >> $GITHUB_STEP_SUMMARY
+        fi
+
+#**************************************************************************************************************
+# COMMENTED OUT - Container scanning sections until we can get FCS CLI image assessment working
+#**************************************************************************************************************
+
+    # - name: Ensure docker is not running
+    #   run: |
+    #     sudo systemctl stop docker.service
+    #     sudo systemctl stop docker.socket
+
+    # - name: Podman build
+    #   run: |
+    #     podman build --platform linux/amd64 -t ${{ secrets.AWS_ACCOUNT_ID}}.dkr.ecr.us-east-2.amazonaws.com/${{ env.ECR_REPO }}:${{ env.ECR_TAG }} .
+    #     systemctl --user enable --now podman.socket
+
+    # - name: Configure AWS credentials for FCS CLI
+    #   uses: aws-actions/configure-aws-credentials@v4
+    #   with:
+    #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_FCS }}
+    #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_FCS }}
+    #     aws-region: us-west-2
+
+    # - name: Download and Update FCS CLI
+    #   run: |
+    #     echo "Downloading FCS CLI from S3..."
+    #     aws s3 cp s3://fcs-cli-beta-testing-kc/fcs /usr/local/bin/fcs
+    #     chmod +x /usr/local/bin/fcs
+    #     
+    #     echo "Current FCS CLI version:"
+    #     fcs version || echo "Could not get version"
+    #     
+    #     echo "Updating FCS CLI to latest version..."
+    #     fcs update || echo "Update failed or not needed"
+    #     
+    #     echo "Updated FCS CLI version:"
+    #     fcs version || echo "Could not get version after update"
+
+    # - name: Configure FCS CLI
+    #   env:
+    #     FCS_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
+    #     FCS_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+    #     FCS_FALCON_REGION: "us-1"
+    #   run: |
+    #     fcs configure --client-id "$FCS_CLIENT_ID" --client-secret "$FCS_CLIENT_SECRET" --falcon-region "$FCS_FALCON_REGION"
+   
+    # - name: Run FCS CLI Image Scan
+    #   run: |
+    #     echo "Scanning container image..."
+    #     fcs scan image ${{ secrets.AWS_ACCOUNT_ID}}.dkr.ecr.us-east-2.amazonaws.com/${{ env.ECR_REPO }}:${{ env.ECR_TAG }} --platform linux/amd64 --upload
