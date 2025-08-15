@@ -5,14 +5,14 @@ name: actions-jobs
 on: 
   workflow_dispatch:
   pull_request:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
     
 # Define permissions required for this workflow
 permissions:
   contents: read
   security-events: write
   actions: read
-  pull-requests: write  # Added for PR commenting
+  pull-requests: write
   
 # Environment variables available to all jobs
 env:
@@ -147,19 +147,19 @@ jobs:
         scan_duration=$(jq -r '.scan_duration_seconds // "N/A"' "$JSON_FILE")
         files_scanned=$(jq -r '.stats.files_stats.total // "N/A"' "$JSON_FILE")
         
-        echo "📊 Scan Information:"
+        echo "Scan Information:"
         echo "   • Scan UUID: $scan_uuid"
         echo "   • Scan Date: $scan_date"
         echo "   • Duration: ${scan_duration}s"
         echo "   • Files Scanned: $files_scanned"
         echo ""
         
-        echo "🛡️ Security Findings Summary:"
-        echo "   • 🔴 Critical Severity: $critical_issues"
-        echo "   • 🟠 High Severity: $high_issues"
-        echo "   • 🟡 Medium Severity: $medium_issues"
-        echo "   • ℹ️  Informational: $info_issues"
-        echo "   • 📊 Total Issues: $total_issues"
+        echo "Security Findings Summary:"
+        echo "   • Critical Severity: $critical_issues"
+        echo "   • High Severity: $high_issues"
+        echo "   • Medium Severity: $medium_issues"
+        echo "   • Informational: $info_issues"
+        echo "   • Total Issues: $total_issues"
         echo ""
         
         # Set outputs for other steps
@@ -171,52 +171,55 @@ jobs:
         
         # Show top critical/high findings with better formatting
         if [ "$critical_issues" -gt 0 ] || [ "$high_issues" -gt 0 ]; then
-          echo "🚨 Critical/High Severity Findings:"
+          echo "Critical/High Severity Findings:"
           jq -r '.rule_detections[] | select(.severity == "Critical" or .severity == "High") | 
             "   • " + .severity + ": " + .rule_name + 
-            "\n     📁 File: " + (.detections[0].file // "N/A") + 
+            "\n     File: " + (.detections[0].file // "N/A") + 
             " (Line " + ((.detections[0].line // 0) | tostring) + ")" +
-            "\n     💡 " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
+            "\n     Issue: " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
           echo ""
         fi
         
         # Generate human-readable summary file
         SUMMARY_FILE="./scan-results/fcs-detailed-summary.txt"
-        echo "📝 Generating detailed summary report..."
+        echo "Generating detailed summary report..."
         
-        cat > "$SUMMARY_FILE" << EOF
-================================================================================
-CrowdStrike Falcon Cloud Security - Detailed Scan Results
-================================================================================
-
-Scan Information:
-- Scan UUID: $scan_uuid
-- Scan Date: $scan_date  
-- Scan Duration: ${scan_duration} seconds
-- Files Scanned: $files_scanned
-- Scan Mode: ${{ steps.changed-files.outputs.scan_mode }}
-
-Security Findings Summary:
-- 🔴 Critical Severity: $critical_issues
-- 🟠 High Severity: $high_issues  
-- 🟡 Medium Severity: $medium_issues
-- ℹ️  Informational: $info_issues
-- 📊 Total Issues: $total_issues
-
-================================================================================
-DETAILED FINDINGS BY SEVERITY
-================================================================================
-
-EOF
+        # Create the summary file header
+        {
+          echo "================================================================================"
+          echo "CrowdStrike Falcon Cloud Security - Detailed Scan Results"
+          echo "================================================================================"
+          echo ""
+          echo "Scan Information:"
+          echo "- Scan UUID: $scan_uuid"
+          echo "- Scan Date: $scan_date"
+          echo "- Scan Duration: ${scan_duration} seconds"
+          echo "- Files Scanned: $files_scanned"
+          echo "- Scan Mode: ${{ steps.changed-files.outputs.scan_mode }}"
+          echo ""
+          echo "Security Findings Summary:"
+          echo "- Critical Severity: $critical_issues"
+          echo "- High Severity: $high_issues"
+          echo "- Medium Severity: $medium_issues"
+          echo "- Informational: $info_issues"
+          echo "- Total Issues: $total_issues"
+          echo ""
+          echo "================================================================================"
+          echo "DETAILED FINDINGS BY SEVERITY"
+          echo "================================================================================"
+          echo ""
+        } > "$SUMMARY_FILE"
         
         # Add detailed findings for each severity level
         for severity in "Critical" "High" "Medium" "Informational"; do
           count=$(jq -r --arg sev "$severity" '[.rule_detections[] | select(.severity == $sev) | .detections[]] | length' "$JSON_FILE")
           
           if [ "$count" -gt 0 ]; then
-            echo "" >> "$SUMMARY_FILE"
-            echo "=== $severity SEVERITY ISSUES ($count found) ===" >> "$SUMMARY_FILE"
-            echo "" >> "$SUMMARY_FILE"
+            {
+              echo ""
+              echo "=== $severity SEVERITY ISSUES ($count found) ==="
+              echo ""
+            } >> "$SUMMARY_FILE"
             
             jq -r --arg sev "$severity" '
               .rule_detections[] |
@@ -224,17 +227,17 @@ EOF
               . as $rule |
               .detections[] |
               "Rule: " + $rule.rule_name + "
-Category: " + $rule.rule_category + "  
+Category: " + $rule.rule_category + "
 Description: " + $rule.description + "
 Platform: " + $rule.platform + " | Cloud Provider: " + ($rule.cloud_provider // "N/A") + "
 
 Affected Resource:
-  📁 File: " + .file + " (Line " + (.line | tostring) + ")
-  🏷️  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "
-  ⚠️  Issue: " + .reason + "
-  💡 Recommendation: " + .recommendation +
+  File: " + .file + " (Line " + (.line | tostring) + ")
+  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "
+  Issue: " + .reason + "
+  Recommendation: " + .recommendation +
               (if .remediation then "
-  🔧 Remediation: " + .remediation else "" end) + "
+  Remediation: " + .remediation else "" end) + "
 
 " + ("─" * 80) + "
 "
@@ -243,30 +246,30 @@ Affected Resource:
         done
         
         # Add footer to summary
-        cat >> "$SUMMARY_FILE" << EOF
-
-================================================================================
-SCAN COMPLETION SUMMARY  
-================================================================================
-
-Generated on: $(date)
-Workflow: ${{ github.workflow }}
-Run ID: ${{ github.run_id }}
-
-Report Files Generated:
-- JSON Results: $(basename "$JSON_FILE")
-- Detailed Summary: $(basename "$SUMMARY_FILE")
-- SARIF Results: Available in scan-results directory
-
-For remediation guidance, consult:
-- CrowdStrike Falcon Cloud Security documentation
-- Your organization's security team
-- The detailed recommendations above
-
-================================================================================
-EOF
+        {
+          echo ""
+          echo "================================================================================"
+          echo "SCAN COMPLETION SUMMARY"
+          echo "================================================================================"
+          echo ""
+          echo "Generated on: $(date)"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo ""
+          echo "Report Files Generated:"
+          echo "- JSON Results: $(basename "$JSON_FILE")"
+          echo "- Detailed Summary: $(basename "$SUMMARY_FILE")"
+          echo "- SARIF Results: Available in scan-results directory"
+          echo ""
+          echo "For remediation guidance, consult:"
+          echo "- CrowdStrike Falcon Cloud Security documentation"
+          echo "- Your organization's security team"
+          echo "- The detailed recommendations above"
+          echo ""
+          echo "================================================================================"
+        } >> "$SUMMARY_FILE"
         
-        echo "✅ Detailed summary generated: $SUMMARY_FILE"
+        echo "Detailed summary generated: $SUMMARY_FILE"
         echo "summary-file=$SUMMARY_FILE" >> $GITHUB_OUTPUT
         
         echo ""
@@ -493,52 +496,3 @@ EOF
           echo "### ✅ No Security Issues Found" >> $GITHUB_STEP_SUMMARY
           echo "All scanned files passed security validation." >> $GITHUB_STEP_SUMMARY
         fi
-
-#**************************************************************************************************************
-# COMMENTED OUT - Container scanning sections until we can get FCS CLI image assessment working
-#**************************************************************************************************************
-
-    # - name: Ensure docker is not running
-    #   run: |
-    #     sudo systemctl stop docker.service
-    #     sudo systemctl stop docker.socket
-
-    # - name: Podman build
-    #   run: |
-    #     podman build --platform linux/amd64 -t ${{ secrets.AWS_ACCOUNT_ID}}.dkr.ecr.us-east-2.amazonaws.com/${{ env.ECR_REPO }}:${{ env.ECR_TAG }} .
-    #     systemctl --user enable --now podman.socket
-
-    # - name: Configure AWS credentials for FCS CLI
-    #   uses: aws-actions/configure-aws-credentials@v4
-    #   with:
-    #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_FCS }}
-    #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_FCS }}
-    #     aws-region: us-west-2
-
-    # - name: Download and Update FCS CLI
-    #   run: |
-    #     echo "Downloading FCS CLI from S3..."
-    #     aws s3 cp s3://fcs-cli-beta-testing-kc/fcs /usr/local/bin/fcs
-    #     chmod +x /usr/local/bin/fcs
-    #     
-    #     echo "Current FCS CLI version:"
-    #     fcs version || echo "Could not get version"
-    #     
-    #     echo "Updating FCS CLI to latest version..."
-    #     fcs update || echo "Update failed or not needed"
-    #     
-    #     echo "Updated FCS CLI version:"
-    #     fcs version || echo "Could not get version after update"
-
-    # - name: Configure FCS CLI
-    #   env:
-    #     FCS_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
-    #     FCS_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
-    #     FCS_FALCON_REGION: "us-1"
-    #   run: |
-    #     fcs configure --client-id "$FCS_CLIENT_ID" --client-secret "$FCS_CLIENT_SECRET" --falcon-region "$FCS_FALCON_REGION"
-   
-    # - name: Run FCS CLI Image Scan
-    #   run: |
-    #     echo "Scanning container image..."
-    #     fcs scan image ${{ secrets.AWS_ACCOUNT_ID}}.dkr.ecr.us-east-2.amazonaws.com/${{ env.ECR_REPO }}:${{ env.ECR_TAG }} --platform linux/amd64 --upload
