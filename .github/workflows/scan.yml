@@ -172,11 +172,7 @@ jobs:
         # Show top critical/high findings with better formatting
         if [ "$critical_issues" -gt 0 ] || [ "$high_issues" -gt 0 ]; then
           echo "Critical/High Severity Findings:"
-          jq -r '.rule_detections[] | select(.severity == "Critical" or .severity == "High") | 
-            "   • " + .severity + ": " + .rule_name + 
-            "\n     File: " + (.detections[0].file // "N/A") + 
-            " (Line " + ((.detections[0].line // 0) | tostring) + ")" +
-            "\n     Issue: " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
+          jq -r '.rule_detections[] | select(.severity == "Critical" or .severity == "High") | "   • " + .severity + ": " + .rule_name + "\n     File: " + (.detections[0].file // "N/A") + " (Line " + ((.detections[0].line // 0) | tostring) + ")\n     Issue: " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
           echo ""
         fi
         
@@ -221,27 +217,8 @@ jobs:
               echo ""
             } >> "$SUMMARY_FILE"
             
-            jq -r --arg sev "$severity" '
-              .rule_detections[] |
-              select(.severity == $sev) |
-              . as $rule |
-              .detections[] |
-              "Rule: " + $rule.rule_name + "
-Category: " + $rule.rule_category + "
-Description: " + $rule.description + "
-Platform: " + $rule.platform + " | Cloud Provider: " + ($rule.cloud_provider // "N/A") + "
-
-Affected Resource:
-  File: " + .file + " (Line " + (.line | tostring) + ")
-  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "
-  Issue: " + .reason + "
-  Recommendation: " + .recommendation +
-              (if .remediation then "
-  Remediation: " + .remediation else "" end) + "
-
-" + ("─" * 80) + "
-"
-            ' "$JSON_FILE" >> "$SUMMARY_FILE"
+            # Use a simpler jq command to avoid YAML issues
+            jq -r --arg sev "$severity" '.rule_detections[] | select(.severity == $sev) | . as $rule | .detections[] | "Rule: " + $rule.rule_name + "\nCategory: " + $rule.rule_category + "\nDescription: " + $rule.description + "\nPlatform: " + $rule.platform + " | Cloud Provider: " + ($rule.cloud_provider // "N/A") + "\n\nAffected Resource:\n  File: " + .file + " (Line " + (.line | tostring) + ")\n  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "\n  Issue: " + .reason + "\n  Recommendation: " + .recommendation + (if .remediation then "\n  Remediation: " + .remediation else "" end) + "\n\n" + ("─" * 80) + "\n"' "$JSON_FILE" >> "$SUMMARY_FILE"
           fi
         done
         
@@ -276,140 +253,7 @@ Affected Resource:
         echo "================================================================================"
         echo ""
 
-    # Display detailed scan results for debugging and transparency
-    - name: Display Detailed Scan Results
-      if: always() && steps.changed-files.outputs.has_changes == 'true'
-      run: |
-        echo "=== FCS SCAN RESULTS ANALYSIS ==="
-        echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
-        echo ""
-        
-        # Check if JSON results exist and display them with correct structure
-        if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
-          echo "=== JSON SCAN RESULTS ==="
-          JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
-          echo "JSON file: $JSON_FILE"
-          
-          # Display summary using correct JSON structure
-          echo ""
-          echo "=== DETECTION SUMMARY ==="
-          jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
-
-          # Show high/critical findings that would cause workflow failure
-          echo ""
-          echo "=== HIGH/CRITICAL DETECTIONS ==="
-          jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical") | "- \(.severity | ascii_upcase): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null || echo "No high/critical detections found"
-
-          # Show sample of all detections for debugging (limited to 10)
-          echo ""
-          echo "=== ALL DETECTIONS (for debugging) ==="
-          jq -r '.rule_detections[] | "- \(.severity): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null | head -10 || echo "Could not parse detections"
-          
-        else
-          echo "No JSON results file found"
-        fi
-        
-        # Also check SARIF for additional context
-        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
-          echo ""
-          echo "=== SARIF SAMPLE FINDINGS ==="
-          SARIF_FILE=$(ls ./scan-results/*-scan-results.sarif | head -1)
-          jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
-        fi
-
-    # Comment on PR with formatted results
-    - name: Comment PR with Security Results
-      if: always() && github.event_name == 'pull_request' && steps.format-results.outputs.json-file != ''
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          const jsonFile = '${{ steps.format-results.outputs.json-file }}';
-          
-          if (!fs.existsSync(jsonFile)) {
-            console.log('No results file found for PR comment');
-            return;
-          }
-          
-          const results = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
-          const exitCode = '${{ steps.fcs.outputs.exit-code }}';
-          const scanMode = '${{ steps.changed-files.outputs.scan_mode }}';
-          
-          // Determine status emoji and message
-          const totalIssues = results.detection_summary?.total || 0;
-          const criticalIssues = results.detection_summary?.critical || 0;
-          const highIssues = results.detection_summary?.high || 0;
-          
-          let statusEmoji = '✅';
-          let statusMessage = 'No security issues found!';
-          
-          if (criticalIssues > 0 || highIssues > 0) {
-            statusEmoji = '🚨';
-            statusMessage = 'Critical/High severity security issues found!';
-          } else if (totalIssues > 0) {
-            statusEmoji = '⚠️';
-            statusMessage = 'Medium/Low severity issues found.';
-          }
-          
-          const summary = `## ${statusEmoji} CrowdStrike FCS Security Scan Results
-          
-          **Scan Status:** ${statusMessage}
-          **Scan Mode:** ${scanMode === 'pr_changes' ? '🔍 Changed Files Only' : '📂 Full Repository'}
-          **Exit Code:** ${exitCode}
-          
-          ### 📊 Security Findings Summary
-          | Severity | Count |
-          |----------|-------|
-          | 🔴 Critical | ${results.detection_summary?.critical || 0} |
-          | 🟠 High | ${results.detection_summary?.high || 0} |
-          | 🟡 Medium | ${results.detection_summary?.medium || 0} |
-          | ℹ️ Informational | ${results.detection_summary?.informational || 0} |
-          | **📊 Total** | **${totalIssues}** |
-          
-          ### 📈 Scan Metadata
-          - **Files Scanned:** ${results.stats?.files_stats?.total || 'N/A'}
-          - **Scan Duration:** ${results.scan_duration_seconds || 'N/A'}s
-          - **Scan UUID:** \`${results.scan_uuid || 'N/A'}\`
-          
-          ${totalIssues > 0 ? `
-          ### 🔍 Action Required
-          ${criticalIssues > 0 || highIssues > 0 ? 
-            '❌ **This PR cannot be merged** until critical/high severity issues are resolved.' : 
-            '✅ This PR can be merged, but consider addressing the findings below.'}
-          
-          **View detailed results in the [Actions tab](${context.payload.pull_request.html_url.replace('/pull/', '/actions/runs/')})** for specific file locations and remediation guidance.
-          ` : ''}
-          
-          ---
-          <sub>🛡️ Powered by CrowdStrike Falcon Cloud Security | 🤖 Automated Security Scanning</sub>`;
-          
-          // Find existing comment to update or create new one
-          const { data: comments } = await github.rest.issues.listComments({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            issue_number: context.issue.number,
-          });
-          
-          const existingComment = comments.find(comment => 
-            comment.body.includes('CrowdStrike FCS Security Scan Results')
-          );
-          
-          if (existingComment) {
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: existingComment.id,
-              body: summary
-            });
-          } else {
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: summary
-            });
-          }
-
+    
     # Upload detailed summary as artifact
     - name: Upload Detailed Summary
       if: always() && steps.format-results.outputs.summary-file != ''
