@@ -172,11 +172,7 @@ jobs:
         # Show top critical/high findings with better formatting
         if [ "$critical_issues" -gt 0 ] || [ "$high_issues" -gt 0 ]; then
           echo "Critical/High Severity Findings:"
-          jq -r '.rule_detections[] | select(.severity == "Critical" or .severity == "High") | 
-            "   • " + .severity + ": " + .rule_name + 
-            "\n     File: " + (.detections[0].file // "N/A") + 
-            " (Line " + ((.detections[0].line // 0) | tostring) + ")" +
-            "\n     Issue: " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
+          jq -r '.rule_detections[] | select(.severity == "Critical" or .severity == "High") | "   • " + .severity + ": " + .rule_name + "\n     File: " + (.detections[0].file // "N/A") + " (Line " + ((.detections[0].line // 0) | tostring) + ")\n     Issue: " + (.detections[0].reason // .description)' "$JSON_FILE" | head -20
           echo ""
         fi
         
@@ -221,27 +217,8 @@ jobs:
               echo ""
             } >> "$SUMMARY_FILE"
             
-            jq -r --arg sev "$severity" '
-              .rule_detections[] |
-              select(.severity == $sev) |
-              . as $rule |
-              .detections[] |
-              "Rule: " + $rule.rule_name + "
-Category: " + $rule.rule_category + "
-Description: " + $rule.description + "
-Platform: " + $rule.platform + " | Cloud Provider: " + ($rule.cloud_provider // "N/A") + "
-
-Affected Resource:
-  File: " + .file + " (Line " + (.line | tostring) + ")
-  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "
-  Issue: " + .reason + "
-  Recommendation: " + .recommendation +
-              (if .remediation then "
-  Remediation: " + .remediation else "" end) + "
-
-" + ("─" * 80) + "
-"
-            ' "$JSON_FILE" >> "$SUMMARY_FILE"
+            # Use a simpler jq command to avoid YAML issues
+            jq -r --arg sev "$severity" '.rule_detections[] | select(.severity == $sev) | . as $rule | .detections[] | "Rule: " + $rule.rule_name + "\nCategory: " + $rule.rule_category + "\nDescription: " + $rule.description + "\nPlatform: " + $rule.platform + " | Cloud Provider: " + ($rule.cloud_provider // "N/A") + "\n\nAffected Resource:\n  File: " + .file + " (Line " + (.line | tostring) + ")\n  Resource: " + (.resource_type // "N/A") + " - " + (.resource_name // "N/A") + "\n  Issue: " + .reason + "\n  Recommendation: " + .recommendation + (if .remediation then "\n  Remediation: " + .remediation else "" end) + "\n\n" + ("─" * 80) + "\n"' "$JSON_FILE" >> "$SUMMARY_FILE"
           fi
         done
         
