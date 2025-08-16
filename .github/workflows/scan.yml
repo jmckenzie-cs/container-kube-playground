@@ -253,47 +253,6 @@ jobs:
         echo "================================================================================"
         echo ""
 
-    # Display detailed scan results for debugging and transparency
-    - name: Display Detailed Scan Results
-      if: always() && steps.changed-files.outputs.has_changes == 'true'
-      run: |
-        echo "=== FCS SCAN RESULTS ANALYSIS ==="
-        echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
-        echo ""
-        
-        # Check if JSON results exist and display them with correct structure
-        if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
-          echo "=== JSON SCAN RESULTS ==="
-          JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
-          echo "JSON file: $JSON_FILE"
-          
-          # Display summary using correct JSON structure
-          echo ""
-          echo "=== DETECTION SUMMARY ==="
-          jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
-
-          # Show high/critical findings that would cause workflow failure
-          echo ""
-          echo "=== HIGH/CRITICAL DETECTIONS ==="
-          jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical") | "- \(.severity | ascii_upcase): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null || echo "No high/critical detections found"
-
-          # Show sample of all detections for debugging (limited to 10)
-          echo ""
-          echo "=== ALL DETECTIONS (for debugging) ==="
-          jq -r '.rule_detections[] | "- \(.severity): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null | head -10 || echo "Could not parse detections"
-          
-        else
-          echo "No JSON results file found"
-        fi
-        
-        # Also check SARIF for additional context
-        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
-          echo ""
-          echo "=== SARIF SAMPLE FINDINGS ==="
-          SARIF_FILE=$(ls ./scan-results/*-scan-results.sarif | head -1)
-          jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
-        fi
-
     # Comment on PR with formatted results
     - name: Comment PR with Security Results
       if: always() && github.event_name == 'pull_request' && steps.format-results.outputs.json-file != ''
