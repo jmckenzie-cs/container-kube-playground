@@ -217,11 +217,11 @@ jobs:
         name: security-scan-results
         path: |
           # Detailed JSON results
-          fcs-scan-results.json
+          scan-results.json
           # SARIF format for security tools
-          fcs-scan-results.sarif
+          scan-results.sarif
           # Human-readable summary
-          fcs-scan-summary.txt
+          scan-summary.txt
 
 #**************************************************************************************************************
 # COMMENTED OUT - Container scanning sections until we can get FCS CLI image assessment working
