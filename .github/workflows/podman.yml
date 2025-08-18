@@ -191,30 +191,32 @@ jobs:
           echo "No SARIF file found to transform"
         fi
 
-        - name: Print SARIF Results Summary
-          run: |
-            echo "🔍 Falcon Cloud Security Scan Results"
-            echo "======================================"
-            echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' sarif-results.json)"
-            echo "Version: $(jq -r '.runs[0].tool.driver.version' sarif-results.json)"
-            echo ""
-            
-            TOTAL_ISSUES=$(jq '.runs[0].results | length' sarif-results.json)
-            echo "📊 Total Issues Found: $TOTAL_ISSUES"
-            echo ""
-            
-            if [ "$TOTAL_ISSUES" -gt 0 ]; then
-              echo "🚨 Issues by File and Line:"
-              echo "-------------------------"
-              jq -r '.runs[0].results[] | 
-                .locations[0].physicalLocation.artifactLocation.uri as $file |
-                .locations[0].physicalLocation.region.startLine as $line |
-                .message.text as $msg |
-                (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].name) as $ruleName |
-                "📄 \($file):\($line) - \($ruleName)\n   ➤ \($msg)\n"' sarif-results.json
-            else
-              echo "✅ No issues found!"
-            fi
+    - name: Print SARIF Results Summary
+      run: |
+        SARIF_FILE="scan-results.sarif"
+        
+        echo "🔍 Falcon Cloud Security Scan Results"
+        echo "======================================"
+        echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' "$SARIF_FILE")"
+        echo "Version: $(jq -r '.runs[0].tool.driver.version' "$SARIF_FILE")"
+        echo ""
+        
+        TOTAL_ISSUES=$(jq '.runs[0].results | length' "$SARIF_FILE")
+        echo "📊 Total Issues Found: $TOTAL_ISSUES"
+        echo ""
+        
+        if [ "$TOTAL_ISSUES" -gt 0 ]; then
+          echo "🚨 Issues by File and Line:"
+          echo "-------------------------"
+          jq -r '.runs[0].results[] | 
+            .locations[0].physicalLocation.artifactLocation.uri as $file |
+            .locations[0].physicalLocation.region.startLine as $line |
+            .message.text as $msg |
+            (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].name) as $ruleName |
+            "📄 \($file):\($line) - \($ruleName)\n   ➤ \($msg)\n"' "$SARIF_FILE"
+        else
+          echo "✅ No issues found!"
+        fi
 
 
     # # Upload scan results to GitHub Security tab for code scanning alerts
