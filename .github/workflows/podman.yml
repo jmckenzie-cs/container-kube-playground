@@ -207,6 +207,21 @@ jobs:
         echo "- **Scan Mode**: ${{ steps.changed-files.outputs.scan_mode }}" >> $GITHUB_STEP_SUMMARY
         echo "- **FCS Exit Code**: ${{ steps.fcs.outputs.exit-code }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Files Excluded**: $(echo '${{ steps.changed-files.outputs.exclude_paths }}' | tr ',' '\n' | wc -l)" >> $GITHUB_STEP_SUMMARY
+     
+    # Step 5: Archive scan results as workflow artifacts
+    # Always upload artifacts, even if previous steps failed
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-scan-results
+        path: |
+          # Detailed JSON results
+          fcs-scan-results.json
+          # SARIF format for security tools
+          fcs-scan-results.sarif
+          # Human-readable summary
+          fcs-scan-summary.txt
 
 #**************************************************************************************************************
 # COMMENTED OUT - Container scanning sections until we can get FCS CLI image assessment working
