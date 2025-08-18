@@ -90,6 +90,22 @@ jobs:
     - name: Create output directory
       run: mkdir -p ./scan-results
 
+    - name: Print SARIF Results in Human Readable Format
+      run: |
+        echo "=== Falcon Cloud Security Scan Results ==="
+        echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' sarif-results.json)"
+        echo "Version: $(jq -r '.runs[0].tool.driver.version' sarif-results.json)"
+        echo ""
+        
+        echo "=== Summary ==="
+        TOTAL_ISSUES=$(jq '.runs[0].results | length' sarif-results.json)
+        echo "Total Issues Found: $TOTAL_ISSUES"
+        echo ""
+        
+        echo "=== Issues by Category ==="
+        jq -r '.runs[0].results[] | .ruleId as $ruleId | .locations[0].physicalLocation.region.startLine as $line | .locations[0].physicalLocation.artifactLocation.uri as $file | .message.text as $msg | (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].name) as $ruleName | "\($file):\($line) - \($ruleName): \($msg)"' sarif-results.json | sort
+
+
     # Run CrowdStrike Falcon Cloud Security IaC scan
     - name: Run FCS IaC Scan
       uses: crowdstrike/fcs-action@v1.1.0
