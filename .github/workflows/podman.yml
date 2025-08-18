@@ -191,20 +191,18 @@ jobs:
           echo "No SARIF file found to transform"
         fi
 
+    # Print human friendly
     - name: Print SARIF Results Summary
       run: |
         SARIF_FILE="scan-results.sarif"
-        
         echo "🔍 Falcon Cloud Security Scan Results"
         echo "======================================"
         echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' "$SARIF_FILE")"
         echo "Version: $(jq -r '.runs[0].tool.driver.version' "$SARIF_FILE")"
         echo ""
-        
         TOTAL_ISSUES=$(jq '.runs[0].results | length' "$SARIF_FILE")
         echo "📊 Total Issues Found: $TOTAL_ISSUES"
         echo ""
-        
         if [ "$TOTAL_ISSUES" -gt 0 ]; then
           echo "🚨 Issues by File and Line:"
           echo "-------------------------"
