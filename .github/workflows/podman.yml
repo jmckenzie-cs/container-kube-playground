@@ -191,12 +191,12 @@ jobs:
     #       echo "No SARIF file found to transform"
     #     fi
 
-    # Upload scan results to GitHub Security tab for code scanning alerts
-    - name: Upload SARIF report to GitHub Code scanning
-      uses: github/codeql-action/upload-sarif@v3
-      if: always() && hashFiles('scan-results.sarif') != ''
-      with:
-        sarif_file: scan-results.sarif
+    # # Upload scan results to GitHub Security tab for code scanning alerts
+    # - name: Upload SARIF report to GitHub Code scanning
+    #   uses: github/codeql-action/upload-sarif@v3
+    #   if: always() && hashFiles('scan-results.sarif') != ''
+    #   with:
+    #     sarif_file: scan-results.sarif
 
     # Generate workflow summary for GitHub Actions summary page
     - name: Scan Summary
