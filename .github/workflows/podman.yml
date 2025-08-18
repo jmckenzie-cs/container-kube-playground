@@ -107,46 +107,46 @@ jobs:
       env:
         FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
-    # Display detailed scan results for debugging and transparency
-    - name: Display Detailed Scan Results
-      if: always() && steps.changed-files.outputs.has_changes == 'true'
-      run: |
-        echo "=== FCS SCAN RESULTS ANALYSIS ==="
-        echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
-        echo ""
+    # # Display detailed scan results for debugging and transparency
+    # - name: Display Detailed Scan Results
+    #   if: always() && steps.changed-files.outputs.has_changes == 'true'
+    #   run: |
+    #     echo "=== FCS SCAN RESULTS ANALYSIS ==="
+    #     echo "Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+    #     echo ""
         
-        # Check if JSON results exist and display them with correct structure
-        if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
-          echo "=== JSON SCAN RESULTS ==="
-          JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
-          echo "JSON file: $JSON_FILE"
+    #     # Check if JSON results exist and display them with correct structure
+    #     if ls ./scan-results/*-scan-results.json 1> /dev/null 2>&1; then
+    #       echo "=== JSON SCAN RESULTS ==="
+    #       JSON_FILE=$(ls ./scan-results/*-scan-results.json | head -1)
+    #       echo "JSON file: $JSON_FILE"
           
-          # Display summary using correct JSON structure
-          echo ""
-          echo "=== DETECTION SUMMARY ==="
-          jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
+    #       # Display summary using correct JSON structure
+    #       echo ""
+    #       echo "=== DETECTION SUMMARY ==="
+    #       jq -r '.detection_summary | to_entries[] | "\(.key): \(.value)"' "$JSON_FILE" 2>/dev/null || echo "Could not parse detection summary"
 
-          # Show high/critical findings that would cause workflow failure
-          echo ""
-          echo "=== HIGH/CRITICAL DETECTIONS ==="
-          jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical") | "- \(.severity | ascii_upcase): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null || echo "No high/critical detections found"
+    #       # Show high/critical findings that would cause workflow failure
+    #       echo ""
+    #       echo "=== HIGH/CRITICAL DETECTIONS ==="
+    #       jq -r '.rule_detections[] | select(.severity == "High" or .severity == "Critical") | "- \(.severity | ascii_upcase): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null || echo "No high/critical detections found"
 
-          # Show sample of all detections for debugging (limited to 10)
-          echo ""
-          echo "=== ALL DETECTIONS (for debugging) ==="
-          jq -r '.rule_detections[] | "- \(.severity): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null | head -10 || echo "Could not parse detections"
+    #       # Show sample of all detections for debugging (limited to 10)
+    #       echo ""
+    #       echo "=== ALL DETECTIONS (for debugging) ==="
+    #       jq -r '.rule_detections[] | "- \(.severity): \(.title) (File: \(.file_path), Line: \(.line_number // "N/A"))"' "$JSON_FILE" 2>/dev/null | head -10 || echo "Could not parse detections"
           
-        else
-          echo "No JSON results file found"
-        fi
+    #     else
+    #       echo "No JSON results file found"
+    #     fi
         
-        # Also check SARIF for additional context
-        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
-          echo ""
-          echo "=== SARIF SAMPLE FINDINGS ==="
-          SARIF_FILE=$(ls ./scan-results/*-scan-results.sarif | head -1)
-          jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
-        fi
+    #     # Also check SARIF for additional context
+    #     if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
+    #       echo ""
+    #       echo "=== SARIF SAMPLE FINDINGS ==="
+    #       SARIF_FILE=$(ls ./scan-results/*-scan-results.sarif | head -1)
+    #       jq -r '.runs[].results[0:5][] | "- \(.message.text) (Line: \(.locations[0].physicalLocation.region.startLine // "N/A"))"' "$SARIF_FILE" 2>/dev/null || echo "Could not parse SARIF"
+    #     fi
 
     # Check scan results and fail PR if critical/high issues found
     - name: Check FCS scan results
@@ -171,25 +171,25 @@ jobs:
       run: |
         echo "::notice::No files were changed in this PR (excluding workflow files). Skipping security scan."
 
-    # Transform SARIF format for better GitHub Security tab integration
-    - name: Transform SARIF file
-      if: always() && steps.changed-files.outputs.has_changes == 'true'
-      run: |
-        if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
-          cp ./scan-results/*-scan-results.sarif original.sarif
-          jq '
-            .runs[].tool.driver.informationUri = "https://www.crowdstrike.com" |
-            .runs[].tool.driver.rules[] |= (
-              if .defaultConfiguration.level == "critical" or .defaultConfiguration.level == "high" then .defaultConfiguration.level = "error"
-              elif .defaultConfiguration.level == "medium" then .defaultConfiguration.level = "warning"
-              elif .defaultConfiguration.level == "low" or .defaultConfiguration.level == "informational" then .defaultConfiguration.level = "note"
-              else .defaultConfiguration.level = "warning"
-              end
-            )
-          ' original.sarif > scan-results.sarif
-        else
-          echo "No SARIF file found to transform"
-        fi
+    # # Transform SARIF format for better GitHub Security tab integration
+    # - name: Transform SARIF file
+    #   if: always() && steps.changed-files.outputs.has_changes == 'true'
+    #   run: |
+    #     if ls ./scan-results/*-scan-results.sarif 1> /dev/null 2>&1; then
+    #       cp ./scan-results/*-scan-results.sarif original.sarif
+    #       jq '
+    #         .runs[].tool.driver.informationUri = "https://www.crowdstrike.com" |
+    #         .runs[].tool.driver.rules[] |= (
+    #           if .defaultConfiguration.level == "critical" or .defaultConfiguration.level == "high" then .defaultConfiguration.level = "error"
+    #           elif .defaultConfiguration.level == "medium" then .defaultConfiguration.level = "warning"
+    #           elif .defaultConfiguration.level == "low" or .defaultConfiguration.level == "informational" then .defaultConfiguration.level = "note"
+    #           else .defaultConfiguration.level = "warning"
+    #           end
+    #         )
+    #       ' original.sarif > scan-results.sarif
+    #     else
+    #       echo "No SARIF file found to transform"
+    #     fi
 
     # Upload scan results to GitHub Security tab for code scanning alerts
     - name: Upload SARIF report to GitHub Code scanning
