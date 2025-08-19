@@ -195,28 +195,22 @@ jobs:
       run: |
         # Find SARIF files in current directory
         SARIF_FILE=$(find . -name "*.sarif" -type f | head -1)
-        
         if [ -z "$SARIF_FILE" ]; then
           echo "❌ No SARIF file found in current directory"
           exit 1
         fi
-        
         echo "📁 Found SARIF file: $SARIF_FILE"
         echo "🔍 Falcon Cloud Security Scan Results"
         echo "======================================"
         echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' "$SARIF_FILE")"
         echo "Version: $(jq -r '.runs[0].tool.driver.version' "$SARIF_FILE")"
         echo ""
-        
         TOTAL_ISSUES=$(jq '.runs[0].results | length' "$SARIF_FILE")
         echo "📊 Total Issues Found: $TOTAL_ISSUES"
         echo ""
-        
         if [ "$TOTAL_ISSUES" -gt 0 ]; then
           echo "🚨 Issues by File and Line:"
           echo "-------------------------"
-          
-          # Fixed jq query - we need to pass the rules array to each result
           jq -r '
             .runs[0] as $run |
             $run.results[] | 
