@@ -193,8 +193,17 @@ jobs:
 
     - name: Print SARIF Results Summary
       run: |
-        SARIF_FILE="scan-results.sarif"
+        # Find SARIF files in current directory
+        SARIF_FILE=$(find . -name "*.sarif" -type f | head -1)
         
+        if [ -z "$SARIF_FILE" ]; then
+          echo "❌ No SARIF file found in current directory"
+          echo "Available files:"
+          ls -la
+          exit 1
+        fi
+        
+        echo "📁 Found SARIF file: $SARIF_FILE"
         echo "🔍 Falcon Cloud Security Scan Results"
         echo "======================================"
         echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' "$SARIF_FILE")"
