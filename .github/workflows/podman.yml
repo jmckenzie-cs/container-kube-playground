@@ -192,15 +192,12 @@ jobs:
         fi
 
     - name: Print SARIF Results Summary
-      if: always()  # Runs regardless of previous step status
       run: |
         # Find SARIF files in current directory
         SARIF_FILE=$(find . -name "*.sarif" -type f | head -1)
         
         if [ -z "$SARIF_FILE" ]; then
           echo "❌ No SARIF file found in current directory"
-          echo "Available files:"
-          ls -la
           exit 1
         fi
         
@@ -218,12 +215,17 @@ jobs:
         if [ "$TOTAL_ISSUES" -gt 0 ]; then
           echo "🚨 Issues by File and Line:"
           echo "-------------------------"
-          jq -r '.runs[0].results[] | 
+          
+          # Fixed jq query - we need to pass the rules array to each result
+          jq -r '
+            .runs[0] as $run |
+            $run.results[] | 
             .locations[0].physicalLocation.artifactLocation.uri as $file |
             .locations[0].physicalLocation.region.startLine as $line |
             .message.text as $msg |
-            (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].name) as $ruleName |
-            "📄 \($file):\($line) - \($ruleName)\n   ➤ \($msg)\n"' "$SARIF_FILE"
+            (.ruleIndex as $idx | $run.tool.driver.rules[$idx].name) as $ruleName |
+            "📄 \($file):\($line) - \($ruleName)\n   ➤ \($msg)\n"
+          ' "$SARIF_FILE"
         else
           echo "✅ No issues found!"
         fi
