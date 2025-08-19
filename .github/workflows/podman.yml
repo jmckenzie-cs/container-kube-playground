@@ -191,7 +191,7 @@ jobs:
           echo "No SARIF file found to transform"
         fi
 
-    - name: Print SARIF Results Summary Human Friendly format
+    - name: Print SARIF Results with Severity
       if: always()
       run: |
         # Find SARIF files in current directory
@@ -206,12 +206,28 @@ jobs:
         echo "Tool: $(jq -r '.runs[0].tool.driver.fullName' "$SARIF_FILE")"
         echo "Version: $(jq -r '.runs[0].tool.driver.version' "$SARIF_FILE")"
         echo ""
+        
+        # Count issues by severity
         TOTAL_ISSUES=$(jq '.runs[0].results | length' "$SARIF_FILE")
-        echo "📊 Total Issues Found: $TOTAL_ISSUES"
+        CRITICAL=$(jq '[.runs[0].results[] | select(.level == "error" or (.level == null and (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].defaultConfiguration.level == "error")))] | length' "$SARIF_FILE")
+        HIGH=$(jq '[.runs[0].results[] | select(.level == "warning" or (.level == null and (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].defaultConfiguration.level == "warning")))] | length' "$SARIF_FILE")
+        MEDIUM=$(jq '[.runs[0].results[] | select(.level == "note" or (.level == null and (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].defaultConfiguration.level == "note")))] | length' "$SARIF_FILE")
+        INFO=$(jq '[.runs[0].results[] | select(.level == "info" or (.level == null and (.ruleIndex as $idx | .runs[0].tool.driver.rules[$idx].defaultConfiguration.level == "info")))] | length' "$SARIF_FILE")
+        
+        echo "📊 SUMMARY"
+        echo "----------"
+        echo "Total Issues: $TOTAL_ISSUES"
+        echo "🔴 Critical/Error: $CRITICAL"
+        echo "🟠 High/Warning: $HIGH" 
+        echo "🟡 Medium/Note: $MEDIUM"
+        echo "🔵 Info: $INFO"
         echo ""
+        
         if [ "$TOTAL_ISSUES" -gt 0 ]; then
-          echo "🚨 Issues by File and Line:"
-          echo "-------------------------"
+          echo "🚨 Issues by Severity and File:"
+          echo "------------------------------"
+          
+          # Parse and display with severity
           jq -r '
             .runs[0] as $run |
             $run.results[] | 
@@ -219,8 +235,14 @@ jobs:
             .locations[0].physicalLocation.region.startLine as $line |
             .message.text as $msg |
             (.ruleIndex as $idx | $run.tool.driver.rules[$idx].name) as $ruleName |
-            "📄 \($file):\($line) - \($ruleName)\n   ➤ \($msg)\n"
-          ' "$SARIF_FILE"
+            (.level // (.ruleIndex as $idx | $run.tool.driver.rules[$idx].defaultConfiguration.level)) as $severity |
+            (if $severity == "error" then "🔴 CRITICAL"
+             elif $severity == "warning" then "🟠 HIGH" 
+             elif $severity == "note" then "🟡 MEDIUM"
+             elif $severity == "info" then "🔵 INFO"
+             else "⚪ UNKNOWN" end) as $severityIcon |
+            "\($severityIcon) | \($file):\($line) | \($ruleName)\n   ➤ \($msg)\n"
+          ' "$SARIF_FILE" | sort
         else
           echo "✅ No issues found!"
         fi
