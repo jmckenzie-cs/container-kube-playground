@@ -192,6 +192,7 @@ jobs:
         fi
 
     - name: Print SARIF Results Summary
+      if: always()  # Runs regardless of previous step status
       run: |
         # Find SARIF files in current directory
         SARIF_FILE=$(find . -name "*.sarif" -type f | head -1)
