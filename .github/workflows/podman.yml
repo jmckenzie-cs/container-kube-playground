@@ -191,7 +191,7 @@ jobs:
           echo "No SARIF file found to transform"
         fi
 
-    - name: Print SARIF Results Summary
+    - name: Print SARIF Results Summary Human Friendly format
       run: |
         # Find SARIF files in current directory
         SARIF_FILE=$(find . -name "*.sarif" -type f | head -1)
